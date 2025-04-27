@@ -1,49 +1,38 @@
-from datetime import datetime
 from flask import Flask, request, jsonify
-from db.mongo import add_task_to_mongo, get_tasks_from_mongo
-from db.redis import increment_task_counter, get_daily_task_count
-from db.neo4j import suggest_friends_from_neo4j
+from flask_httpauth import HTTPBasicAuth
+from db.mongo import register_user, authenticate_user, add_task, get_user_tasks
 
 app = Flask(__name__)
+auth = HTTPBasicAuth()
 
-# Эндпоинт: Добавление задачи
-@app.route("/tasks", methods=["POST"])
-def add_task():
+@auth.verify_password
+def verify_password(nickname, password):
+    return authenticate_user(nickname, password)
+
+# Регистрация
+@app.route('/register', methods=['POST'])
+def register():
     data = request.json
-    date = data.get("date")
-    
-    task_id = add_task_to_mongo(data["text"], date)
-    
-    increment_task_counter(date)
-    
-    return jsonify({
-        "status": "success",
-        "task_id": str(task_id),
-        "date": date
-    }), 201
+    user_id = register_user(data['username'], data['nickname'], data['password'])
+    if not user_id:
+        return jsonify({"error": "User already exists"}), 400
+    return jsonify({"user_id": user_id}), 201
 
-@app.route("/tasks", methods=["GET"])
+# Добавление задачи (требует авторизации)
+@app.route('/tasks', methods=['POST'])
+@auth.login_required
+def create_task():
+    user_id = auth.current_user()
+    task_id = add_task(user_id, request.json['text'], request.json['date'])
+    return jsonify({"task_id": str(task_id)}), 201
+
+# Получение задач (требует авторизации)
+@app.route('/tasks', methods=['GET'])
+@auth.login_required
 def get_tasks():
-    data = request.json
-    date = data.get('date')
+    user_id = auth.current_user()
+    tasks = get_user_tasks(user_id, request.json['date'])
+    return jsonify({"tasks": tasks})
 
-    tasks = get_tasks_from_mongo(date)
-     
-    return jsonify({"date": date, "tasks": tasks})
-
-# Эндпоинт: Получение статистики задач
-@app.route("/stats/daily", methods=["GET"])
-def get_daily_stats():
-    date = request.args.get("date", datetime.now().strftime("%Y-%m-%d"))
-    count = get_daily_task_count(date)
-    return jsonify({"date": date, "task_count": count})
-
-
-# Эндпоинт: Получение рекомендаций друзей
-@app.route("/users/<user_id>/suggested_friends", methods=["GET"])
-def get_suggested_friends(user_id):
-    friends = suggest_friends_from_neo4j(user_id)
-    return jsonify({"user_id": user_id, "suggested_friends": friends})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+if __name__ == '__main__':
+    app.run(debug=True)
