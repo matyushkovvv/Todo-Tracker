@@ -2,15 +2,23 @@ import sys
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QLabel, QLineEdit, QPushButton, QDateEdit,
                             QScrollArea, QCheckBox, QListWidget, QListWidgetItem,
-                            QSizePolicy, QMessageBox, QFrame)
+                            QSizePolicy, QMessageBox, QFrame, QTabWidget)
 from PyQt5.QtCore import QDate, Qt, QSize
 from PyQt5.QtGui import QFont, QPixmap, QIcon
-from api import add_friend_api, get_all_users, get_tasks, add_task, update_task, delete_task
+from api import add_friend_api, get_all_users, get_friend_recommendations_api, get_friends_api, get_tasks, add_task, remove_friend_api, update_task, delete_task
 
 class TodoTracker(QMainWindow):
     def __init__(self, username):
         super().__init__()
         self.username = username
+        
+        self.user_id = None
+        users = get_all_users()
+        for user in users:
+            if isinstance(user, dict):
+                if user.get('username', '') == self.username:
+                    self.user_id = str(user.get('_id', None))
+
         self.current_date = QDate.currentDate()
         self.init_ui()
         self.load_tasks()
@@ -114,48 +122,49 @@ class TodoTracker(QMainWindow):
         right_layout.setContentsMargins(15, 15, 15, 15)
         right_layout.setSpacing(15)
         
-        # Заголовок друзей
-        friends_header = QLabel("Друзья")
-        friends_header.setFont(QFont("Arial", 18, QFont.Bold))
-        friends_header.setStyleSheet("color: #333; margin-bottom: 10px;")
+        # Создаем вкладки для друзей
+        self.tabs = QTabWidget()
         
-        # Список друзей
+        # Вкладка с текущими друзьями
         self.friends_list = QListWidget()
-        self.friends_list.setStyleSheet("""
-            QListWidget {
-                background: white;
-                border: 1px solid #ddd;
-                border-radius: 8px;
-                padding: 5px;
-            }
-            QListWidget::item {
-                padding: 0;
-            }
-        """)
+        friends_tab = QWidget()
+        friends_layout = QVBoxLayout(friends_tab)
+        friends_layout.addWidget(self.friends_list)
         
-        # Панель управления друзьями
-        friends_control = QHBoxLayout()
-        refresh_btn = QPushButton("Обновить")
-        refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
+        # Вкладка с предложенными друзьями
+        self.suggested_list = QListWidget()
+        suggested_tab = QWidget()
+        suggested_layout = QVBoxLayout(suggested_tab)
+        suggested_layout.addWidget(self.suggested_list)
+
+        # Вкладка с рекомендациями
+        self.recommendations_list = QListWidget()
+        recommendations_tab = QWidget()
+        recommendations_layout = QVBoxLayout(recommendations_tab)
+        recommendations_layout.addWidget(self.recommendations_list)
+        
+        # Добавляем вкладки
+        self.tabs.addTab(friends_tab, "Мои друзья")
+        self.tabs.addTab(suggested_tab, "Добавить друзей")
+        self.tabs.addTab(recommendations_tab, "Рекомендации")
+        
+        # Кнопка обновления
+        refresh_btn = QPushButton("Обновить список")
         refresh_btn.setStyleSheet("""
             QPushButton {
+                background: #f0f0f0;
                 padding: 8px;
                 border-radius: 4px;
-                background: #f0f0f0;
             }
             QPushButton:hover {
                 background: #e0e0e0;
             }
         """)
-        refresh_btn.clicked.connect(self.load_friends)
-        
-        friends_control.addWidget(refresh_btn)
-        friends_control.addStretch()
+        refresh_btn.clicked.connect(self.load_friends_data)
         
         # Собираем правую панель
-        right_layout.addWidget(friends_header)
-        right_layout.addWidget(self.friends_list)
-        right_layout.addLayout(friends_control)
+        right_layout.addWidget(self.tabs)
+        right_layout.addWidget(refresh_btn)
         
         # Собираем левую панель
         left_layout.addWidget(header)
@@ -164,74 +173,92 @@ class TodoTracker(QMainWindow):
         left_layout.addLayout(add_panel)
         
         # Собираем главный интерфейс
-        main_layout.addWidget(left_panel, 70)  # 70% ширины
-        main_layout.addWidget(right_panel, 30) # 30% ширины
+        main_layout.addWidget(left_panel, 70)
+        main_layout.addWidget(right_panel, 30)
         
         self.setCentralWidget(main_widget)
-        self.load_friends()
+        self.load_friends_data()
     
-    def load_friends(self):
-        """Загрузка списка всех пользователей (кроме текущего)"""
-        self.friends_list.clear()
+    def load_friends_data(self):
+        """Загрузка данных о друзьях и предложенных пользователях"""
+        # Получаем текущих друзей
+
+        friends_response = get_friends_api(self.user_id)
+        current_friends = friends_response.get('friends', []) if friends_response else []
+        friend_ids = {f['user_id'] for f in current_friends}
         
-        users = get_all_users()
-        if not users:  # Если None или пустой список
-            item = QListWidgetItem("Не удалось загрузить пользователей")
-            item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
-            self.friends_list.addItem(item)
+        # Получаем всех пользователей
+        all_users = get_all_users()
+        if not all_users:
+            self.show_message_in_list(self.friends_list, "Не удалось загрузить друзей")
+            self.show_message_in_list(self.suggested_list, "Не удалось загрузить пользователей")
             return
         
-        # Получаем и нормализуем текущего пользователя
-        current_user = None
-        if hasattr(self, 'user_data') and isinstance(self.user_data, dict):
-            current_user = {
-                'id': str(self.user_data.get('_id', '')),
-                'username': self.user_data.get('username', '').strip().lower()
-            }
-        else:
-            current_username = self.username.strip().lower()
-        
-        for user in users:
-            # Обрабатываем разные форматы данных
-            user_data = {}
+        # Разделяем на друзей и других пользователей
+        friends = []
+        suggested = []
+    
+        for user in all_users:
             if isinstance(user, dict):
-                user_data = {
-                    'id': str(user.get('_id', '')),
-                    'username': user.get('username', '').strip()
-                }
-            elif isinstance(user, str):
-                user_data = {
-                    'id': '',
-                    'username': user.strip()
-                }
-            
-            # Пропускаем некорректные данные
-            if not user_data.get('username'):
-                continue
-                
-            # Проверяем, что это не текущий пользователь
-            is_current_user = False
-            if current_user:
-                # Сравниваем по ID если есть
-                if user_data['id'] and current_user['id']:
-                    is_current_user = user_data['id'] == current_user['id']
-                # Иначе сравниваем по username
-                if not is_current_user:
-                    is_current_user = (user_data['username'].lower() == current_user['username'])
-            else:
-                is_current_user = (user_data['username'].lower() == current_username)
-            
-            if is_current_user:
-                continue
-                
-            # Создаем элемент интерфейса
+                user_id = str(user.get('_id', ''))
+                username = user.get('username', '').strip()
+                    
+                if not username or username.lower() == self.username.lower():
+                    continue
+                        
+                if user_id in friend_ids:
+                    friends.append(user)
+                else:
+                    suggested.append(user)
+    
+        # 4. Загружаем рекомендации (новый код)
+        recommendations_response = get_friend_recommendations_api(self.user_id)
+        recommendations = recommendations_response if recommendations_response else []
+    
+        # Фильтруем рекомендации - оставляем только тех, кто есть в suggested
+        recommendation_ids = {rec['user_id'] for rec in recommendations}
+        filtered_suggested = [user for user in suggested if str(user['_id']) not in recommendation_ids]
+        
+        # 5. Обогащаем рекомендации данными пользователей
+        enriched_recommendations = []
+        for rec in recommendations:
+            user_data = next((u for u in all_users if str(u.get('_id', '')) == rec['user_id']), None)
+            if user_data:
+                enriched_recommendations.append({
+                    **user_data,
+                    'common_friends': rec.get('common_friends', 0)
+                })
+        
+        # Отображаем друзей
+        if friends:
+            self.add_users_to_list(friends, self.friends_list, is_friend=True)
+        else:
+            self.show_message_in_list(self.friends_list, "У вас пока нет друзей")
+        
+        # Отображаем предложенных друзей
+        if suggested:
+            self.add_users_to_list(suggested, self.suggested_list, is_friend=False)
+        else:
+            self.show_message_in_list(self.suggested_list, "Нет пользователей для добавления")
+
+        if enriched_recommendations:
+            self.add_recommendations_to_list(enriched_recommendations)
+        else:
+            self.show_message_in_list(self.recommendations_list, "Нет рекомендаций")
+    
+
+    def add_recommendations_to_list(self, recommendations):
+        """Добавляет рекомендации в список с дополнительной информацией"""
+        self.recommendations_list.clear()
+        
+        for rec in recommendations:
             item = QListWidgetItem()
             widget = QWidget()
             layout = QHBoxLayout(widget)
             layout.setContentsMargins(10, 5, 10, 5)
-            
+
             # Аватар
-            avatar = QLabel(user_data['username'][0].upper())
+            avatar = QLabel(rec['username'][0].upper())
             avatar.setAlignment(Qt.AlignCenter)
             avatar.setStyleSheet("""
                 background: #4a90e2;
@@ -243,16 +270,23 @@ class TodoTracker(QMainWindow):
                 min-height: 30px;
                 max-height: 30px;
             """)
+
+            # Информация о пользователе
+            info_layout = QVBoxLayout()
+            name_label = QLabel(rec['username'])
+            name_label.setStyleSheet("font-size: 14px; font-weight: bold;")
             
-            # Имя пользователя
-            name_label = QLabel(user_data['username'])
-            name_label.setStyleSheet("font-size: 14px;")
+            common_label = QLabel(f"Общих друзей: {rec.get('common_friends', 0)}")
+            common_label.setStyleSheet("font-size: 12px; color: #666;")
             
+            info_layout.addWidget(name_label)
+            info_layout.addWidget(common_label)
+            layout.addWidget(avatar)
+            layout.addLayout(info_layout)
+            layout.addStretch()
+
             # Кнопка добавления
             add_btn = QPushButton("Добавить")
-            add_btn.setProperty('user_id', user_data['id'])
-            add_btn.setProperty('username', user_data['username'])
-            add_btn.setFixedSize(80, 30)
             add_btn.setStyleSheet("""
                 QPushButton {
                     background: #4CAF50;
@@ -260,70 +294,123 @@ class TodoTracker(QMainWindow):
                     border: none;
                     border-radius: 4px;
                     font-size: 12px;
+                    padding: 5px 10px;
                 }
                 QPushButton:hover {
                     background: #3e8e41;
                 }
-                QPushButton:disabled {
-                    background: #cccccc;
-                }
             """)
+            add_btn.clicked.connect(lambda _, uid=rec['_id'], uname=rec['username']: 
+                                self.add_friend(uid))
             
-            # Активируем кнопку только если есть ID
-            if user_data['id']:
-                add_btn.clicked.connect(
-                    lambda _, uid=user_data['id'], uname=user_data['username']: 
-                    self.add_friend(uname)
-                )
-            else:
-                add_btn.setEnabled(False)
-            
+            layout.addWidget(add_btn)
+            item.setSizeHint(widget.sizeHint())
+            self.recommendations_list.addItem(item)
+            self.recommendations_list.setItemWidget(item, widget)
+
+    def show_message_in_list(self, list_widget, message):
+        """Показывает сообщение в списке"""
+        list_widget.clear()
+        item = QListWidgetItem(message)
+        item.setFlags(item.flags() & ~Qt.ItemIsSelectable)
+        list_widget.addItem(item)
+    
+    def add_users_to_list(self, users, list_widget, is_friend):
+        """Добавляет пользователей в список с соответствующими кнопками"""
+        list_widget.clear()
+        
+        for user in users:
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(10, 5, 10, 5)
+
+            # Аватар
+            avatar = QLabel(user['username'][0].upper())
+            avatar.setAlignment(Qt.AlignCenter)
+            avatar.setStyleSheet("""
+                background: #4a90e2;
+                color: white;
+                font-weight: bold;
+                border-radius: 15px;
+                min-width: 30px;
+                max-width: 30px;
+                min-height: 30px;
+                max-height: 30px;
+            """)
+
+            # Имя пользователя
+            name_label = QLabel(user['username'])
+            name_label.setStyleSheet("font-size: 14px;")
+
             layout.addWidget(avatar)
             layout.addWidget(name_label)
             layout.addStretch()
-            layout.addWidget(add_btn)
-            
-            item.setSizeHint(widget.sizeHint())
-            self.friends_list.addItem(item)
-            self.friends_list.setItemWidget(item, widget)
 
-    def add_friend(self, friend_username):
-        """Добавление друга с обработкой через API"""
-        # 1. Получаем данные обоих пользователей
-        users = get_all_users()
-        if not users:
-            QMessageBox.warning(self, "Ошибка", "Не удалось получить список пользователей")
-            return
-        
-        # 2. Находим ID обоих пользователей
-        current_user = None
-        friend_user = None
-        
-        for user in users:
-            if user['username'] == self.username:
-                current_user = user
-            elif user['username'] == friend_username:
-                friend_user = user
-        
-        if not current_user or not friend_user:
-            return
-        
-        # 3. Проверяем, что это не попытка добавить самого себя
-        if current_user['_id'] == friend_user['_id']:
-            return
-        
-        # 4. Добавляем связь через API
+            # Кнопка (разная для друзей и других пользователей)
+            if is_friend:
+                btn = QPushButton("Удалить")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: #f44336;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        font-size: 12px;
+                        padding: 5px 10px;
+                    }
+                    QPushButton:hover {
+                        background: #d32f2f;
+                    }
+                """)
+                btn.clicked.connect(lambda _, uid=user['_id']: self.remove_friend(uid))
+            else:
+                btn = QPushButton("Добавить")
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: #4CAF50;
+                        color: white;
+                        border: none;
+                        border-radius: 4px;
+                        font-size: 12px;
+                        padding: 5px 10px;
+                    }
+                    QPushButton:hover {
+                        background: #3e8e41;
+                    }
+                """)
+                btn.clicked.connect(lambda _, uid=user['_id'], uname=user['username']: self.add_friend(uid))
+
+            btn.setFixedSize(80, 30)
+            layout.addWidget(btn)
+
+            item.setSizeHint(widget.sizeHint())
+            list_widget.addItem(item)
+            list_widget.setItemWidget(item, widget)
+    
+    def add_friend(self, friend_id):
+        """Добавление пользователя в друзья"""
         try:
-            success = add_friend_api(str(current_user['_id']), str(friend_user['_id']))
-            
+            success = add_friend_api(self.user_id, friend_id)
             if success:
-                self.load_friends()
+                self.load_friends_data()
             else:
                 QMessageBox.warning(self, "Ошибка", "Не удалось добавить друга")
-            
         except Exception as e:
-            QMessageBox.warning(self, "Ошибка", 
-                            f"Не удалось добавить друга: {str(e)}")
+            QMessageBox.warning(self, "Ошибка", f"Не удалось добавить друга: {str(e)}")
+    
+    def remove_friend(self, friend_id):
+        """Удаление пользователя из друзей"""
+
+        try:
+            success = remove_friend_api(self.user_id, friend_id)
+            if success:
+                self.load_friends_data()
+            else:
+                QMessageBox.warning(self, "Ошибка", "Не удалось удалить друга")
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка", f"Не удалось удалить друга: {str(e)}")
+
 
     def load_styles(self):
         return """

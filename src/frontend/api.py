@@ -31,12 +31,12 @@ def get_all_users():
         return None
 
 
-def add_friend_api(current_user_id, friend_id):
+def add_friend_api(user_id, friend_id):
     """Добавление друга через API"""
     try:
         response = requests.post(
             f"{BASE_URL}/friends",
-            json={"current_user_id": current_user_id, "friend_id": friend_id}
+            json={"user_id": user_id, "friend_id": friend_id}
         )
         return response.ok
     except requests.exceptions.RequestException as e:
@@ -88,3 +88,48 @@ def delete_task(task_id):
     except requests.exceptions.RequestException as e:
         print(f"Delete task error: {e}")
         return False
+    
+
+def get_friends_api(user_id: str):
+    """Получение списка друзей пользователя"""
+    try:
+        response = requests.get(
+            f"{BASE_URL}/friends/{user_id}"
+        )
+        if response.ok:
+            return response.json()
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Get friends error: {e}")
+        return None
+
+def remove_friend_api(user_id: str, friend_id: str) -> bool:
+    """Удаление друга"""
+    try:
+        response = requests.delete(
+            f"{BASE_URL}/friends",
+            json={
+                "user_id": user_id,
+                "friend_id": friend_id
+            }
+        )
+        return response.ok
+    except requests.exceptions.RequestException as e:
+        print(f"Remove friend error: {e}")
+        return False
+    
+
+def get_friend_recommendations_api(user_id: str):
+    """Получение рекомендаций друзей с бэкенда"""
+    try:
+        response = requests.get(
+            f"{BASE_URL}/friends/{user_id}/recommendations"
+        )
+        if response.ok:
+            data = response.json()
+            # Дополняем данные из MongoDB если нужно
+            return data.get('recommendations', [])
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Get recommendations error: {e}")
+        return None

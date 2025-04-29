@@ -3,7 +3,7 @@ from db.mongo import (register_user, get_user_id,
                       add_task, update_task_status, 
                       get_user_tasks, get_users)
 
-from db.neo4j import (add_friend, get_user_friends)
+from db.neo4j import (add_friend, get_friend_recommendations, get_user_friends, remove_friend_relation)
 
 from bson.objectid import ObjectId
 from datetime import datetime
@@ -38,10 +38,10 @@ def add_friend_api() -> Dict:
     """Добавление пользователя в друзья"""
     # Получаем данные из JSON или form-data
     if request.is_json:
-        current_user_id = request.json.get('current_user_id')
+        current_user_id = request.json.get('user_id')
         friend_id = request.json.get('friend_id')
     else:
-        current_user_id = request.form.get('current_user_id')
+        current_user_id = request.form.get('user_id')
         friend_id = request.form.get('friend_id')
     
     # Проверяем обязательные поля
@@ -71,10 +71,28 @@ def add_friend_api() -> Dict:
             
         return jsonify({
             "message": "Friend added successfully",
-            "current_user_id": current_user_id,
+            "user_id": current_user_id,
             "friend_id": friend_id
         }), 200
         
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+
+@app.route('/friends/<user_id>/recommendations', methods=['GET'])
+def get_recommendations(user_id: str):
+    """Получение рекомендаций друзей"""
+    try:
+        recommendations = get_friend_recommendations(user_id)
+        
+        if not recommendations:
+            return jsonify({"recommendations": [], "message": "No recommendations found"}), 200
+        
+        # Дополняем данные из MongoDB (если нужно)
+        return jsonify({
+            "recommendations": recommendations,
+            "count": len(recommendations)
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -105,6 +123,22 @@ def get_friends(user_id: str) -> Dict:
             "count": len(friends_data)
         }), 200
         
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+
+@app.route('/friends', methods=['DELETE'])
+def remove_friend():
+    """Удаление дружеской связи"""
+    data = request.get_json()
+    if not data or 'user_id' not in data or 'friend_id' not in data:
+        return jsonify({"error": "user_id and friend_id are required"}), 400
+    
+    try:
+        success = remove_friend_relation(data['user_id'], data['friend_id'])
+        if success:
+            return jsonify({"message": "Friend removed successfully"}), 200
+        return jsonify({"error": "Failed to remove friend"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
