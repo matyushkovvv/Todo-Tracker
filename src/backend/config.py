@@ -7,4 +7,4 @@ REDIS_URI = "redis://localhost:6379"
 
 # Neo4j
 NEO4J_URI = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "password")
+NEO4J_AUTH = ("neo4j", "neo4j")
