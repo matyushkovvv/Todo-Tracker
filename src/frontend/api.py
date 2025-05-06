@@ -133,3 +133,27 @@ def get_friend_recommendations_api(user_id: str):
     except requests.exceptions.RequestException as e:
         print(f"Get recommendations error: {e}")
         return None
+
+def increment_workspace_stat(workspace_id: str, stat_name: str):
+    """Увеличивает счетчик статистики для рабочей области"""
+    key = f"ws:{workspace_id}:{stat_name}"
+    try:
+        response = requests.post(
+            f"{BASE_URL}/stats/increment",
+            json={"key": key}
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
+
+def get_workspace_stats(workspace_id: str) -> dict:
+    """Получает статистику для рабочей области"""
+    try:
+        response = requests.get(
+            f"{BASE_URL}/stats/workspace/{workspace_id}"
+        )
+        if response.status_code == 200:
+            return response.json()
+        return {}
+    except Exception:
+        return {}
